@@ -1,0 +1,149 @@
+---
+title: "Superbowl Predictions with Data"
+author: "Lauren Jardiolin"
+date: "2024-12-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(glmnet)
+library(lmtest)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+# Clean data and Preprocessing ##
+We first read our file and look into the first couple of rows to see what types of variables we are dealing with. Then, we can go ahead and omit NA variables as apart of cleaning our data.
+```{r}
+superbowl_data <- read.csv("/Users/lauren/Desktop/Math372/superbowl.csv")
+summary(superbowl_data)
+
+superbowl_data <- na.omit(superbowl_data)
+```
+
+## Create X and y variables ##
+For this dataset, we are interested in predicting the number of winning points the winning team will make in future superbowls. 
+```{r}
+
+head(superbowl_data)
+X <- model.matrix(Winner.Pts ~ ., data = superbowl_data)[, -1]
+y <- superbowl_data$Winner.Pts
+
+summary(superbowl_data$Winner.Pts)
+```
+
+# Comparing LASSO, Ridge, and OLS Regression techniques ##
+
+## LASSO ##
+Run LASSO on our model 
+```{r}
+crossv_lasso <- cv.glmnet(X, y, alpha = 1)
+model_lasso <- glmnet(X, y, alpha = 1, lambda = crossv_lasso$lambda.min)
+
+```
+## Ridge ##
+Run Ridge on our model 
+```{r}
+crossv_ridge <- cv.glmnet(X, y, alpha = 0)
+model_ridge <- glmnet(X, y, alpha = 0, lambda = crossv_ridge$lambda.min)
+```
+
+## OLS ##
+Run OLS on our model 
+```{r}
+model_ols <- lm(Winner.Pts ~ Loser.Pts + City + State + Stadium, data = superbowl_data)
+```
+# Compare Models ##
+When it comes to comparing each of the models, we want the MSE to be as small as possible since it indicates better model accuracy. We can see that OLS provides the best MSE (i.e. lowest MSE of 47.85) compared to other models; thus, we would select OLS as our best model. 
+```{r}
+compare_models <- data.frame(
+  Model = c("Lasso", "Ridge", "OLS"),
+  MSE = c(crossv_lasso$cvm[crossv_lasso$lambda == crossv_lasso$lambda.min], 
+          crossv_ridge$cvm[crossv_ridge$lambda == crossv_ridge$lambda.min], 
+          mean((predict(model_ols, superbowl_data) - y)^2)),
+  AIC = c(NA, NA, AIC(model_ols)),
+  BIC = c(NA, NA, BIC(model_ols)),
+  Adj_R2 = c(NA, NA, summary(model_ols)$adj.r.squared)
+)
+print(compare_models)
+```
+# Formal F-Tests ##
+To use formal F-test to check nested models, ANOVA helps us do so. While looking at the results below, we can see that the F-value for Loser.Pts is 3.605 suggests stronger evidence that the predictor significantly contributes to explaining the response variable. However, provided that its p-value is greater than 0.05 shows that it is not statistically significant. Also, predictors City and Statium's p-value is also greater than 0.05. Showing that both are not statistically significant to the response (Winning.Pts). 
+```{r warning=FALSE}
+
+
+#use ANOVA for formal F-test interpretations
+aov_result <- aov(Winner.Pts ~ Loser.Pts + City + State + Stadium, data = superbowl_data)
+summary(aov_result)
+```
+# Diagnostics ##
+
+## Normality ##
+When we plot model_ols (our linear model), we can see that it is somewhat linear with normal assumptions. However, we compute normality of the residuals with shapiro-wilk. After computing the p-value for shapiro-wilk, we get 0.01. Since 0.01 < 0.05, we reject the null hypothesis which indicates that our model is not normal (not good since we want normality). 
+```{r warning=FALSE}
+par(mfrow = c(2,2))
+plot(model_ols) #use plot to see if we can see if it is linear model with normality assumptions
+
+#formal test of normality of residuals
+shapiro_result <- shapiro.test(residuals(model_ols)) #if p-value > 0.05 we fail to reject (what we want!)
+shapiro_result$p.value #p-value = 0.01
+```
+
+## Heteroscedasticity ##
+Besides testing for normality, we now test for heteroscedasticity with Breusch-Pagan. Our results after computing the BP-test is 0.5595. Because our p-value is grater than 0.05, that means we fail to reject constant variance. Indicating that heteroscedasticity does exist in our model; thus, there is non-constant variance existing in our model. 
+```{r}
+#test for heteroskedasticity
+bp_results <- bptest(model_ols) #p-value > 0.05 - fail to reject constant variance
+bp_results #0.5595
+```
+
+## Leverage Points ##
+To check leverage points, we plot values of leverage to get a better idea. So, we can see in the graph that there are some points of leverage (extreme values). Looking at the graphs below, we can see that there exists leverage points since there exists hat values that are above the 2p/n threshhold line. 
+```{r}
+#leverage of Observations 
+n <- nrow(superbowl_data)
+p <- length(coef(model_ols))
+hats <- as.data.frame(hatvalues(model_ols)) #compute hat values 
+
+#plot the values to get a better idea
+plot(hats, type = "h", ylab = "Hat values", main = "Lev Values")
+abline(h = 2 * p / n, col= "blue")
+
+#index of which hat values are greater than 2p/n
+indx.high.leverage <- which(hats > 2 * p / n)
+```
+
+## Influential Points ##
+Finally, when we look at influential points, we can see the observations that are considered influential such as 6, 13, and 21 that were flagged by at least one diagnostic measure. By identifying these points, we can see which values may significantly influence the regression model in terms of the coefficients for example. 
+```{r}
+#Influence points 
+
+#an overall function for calculating outlier, leverage, and influence statistics
+infl_tab <- influence.measures(model_ols) #determine influence 
+
+influence_measures <- infl_tab$infmat
+influence_measures <- influence_measures[, 35:38]
+
+is_influential <- infl_tab$is.inf 
+#is_influential <- is_influential[, 35:38]
+
+rowSums(is_influential[, 1:ncol(is_influential)])
+plot(rowSums(is_influential[, 1:ncol(is_influential)]), type = "h")
+#find observations that have 1 or more flags
+which(rowSums(is_influential[, 1:ncol(is_influential)]) >= 1)
+```
+
+# Transformations ##
+To determine if we need to transform our response variable, we use the box-cox plot to do so. From the box-cox plot, we can see that lambda is really close to 0. Since it is close to 0, we can determine that a "log" transformation to our response variable could be done to help improve the fit of our model. 
+```{r}
+library(MASS)
+#determining lambda for transformations with box-cox 
+#1) include LM model with the response + variables testing on 
+#2) box-cox plots: boxcox(name_of_lm_model, plotit=T)
+#3) lambda: boxcox(name_of_lm_model, plotit=T, lambda=seq(interval,by=step))
+boxcox(model_ols, plotit=T)
+boxcox(model_ols, plotit=T, lambda=seq(0.5,1.5,by=0.1)) #visual to see if we need to transform data
+```
+
